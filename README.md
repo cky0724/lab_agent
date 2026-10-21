@@ -14,54 +14,48 @@
 
 - **预约与审核**：学生按日期 / 时段预约实验室或单个设备，管理员审核（通过 / 拒绝）；含时段冲突检测、开放时间校验、实验室关闭校验、设备维修校验；后台每分钟自动扫描，将已过期的「待审核」预约置为「已取消」。
 
-- **AI 智能助手**：基于 LangGraph 的 Agent 工作流，SSE 流式输出，可调用 5 个真实工具——知识库检索、开放实验室查询、实验室设备查询、创建预约（需用户确认）、获取今天日期。
+- **AI 智能助手**：基于 LangGraph 的 Agent 工作流，SSE 流式输出，可调用 5 个真实工具——知识库检索、开放实验室查询、实验室设备查询、创建预约（需用户确认）、获取今天日期。（完整架构见下文「🧠 AI 智能助手（Agent）架构」章节）
 
 - **知识库 RAG**：Chroma 向量库 + `BAAI/bge-small-zh-v1.5` 中文 Embedding 模型，知识源为 `backend/data/kb/*.md`，回答规则 / 安全 / 开放时间类问题时自动引用。
 
 - **文件上传**：头像 / 封面图片等通用上传，100MB 上限，白名单扩展名，落盘到 `backend/uploads/` 并以 `/uploads/...` 静态访问。
 
-- ![arch](./docs/images/arch.jpg)
+![arch](./docs/images/arch.jpg)
 
-- ##### 智能体流程
+#### 智能体流程
 
-  ![agent_flow](./docs/images/agent_flow.png)
-  
-  ### 🧠 Agent 记忆体系的工程探索
-  在实现智能体对话记忆时，调研了当前三类典型记忆实现方案，本项目采用**消息列表拼接**的实现方式，同时对比另外两种主流方案。
-  
-  1. **简单消息拼接记忆（本项目采用）**
-  将用户与大模型完整对话历史维护在内存 `messages[]` 列表，每一轮请求把全部历史消息一并传给 LLM，配合 LangGraph 完成工具调用流转。
-  - 优点：实现简单，不需要额外存储组件，工具调用链路稳定；
-  - 缺点：服务重启、会话刷新记忆全部丢失；对话轮次越多上下文token持续膨胀；没有做记忆压缩、持久化存储。
-  
-  2. **基于框架的结构化记忆（LangGraph Checkpointer + Store，本项目未采用）**
-  LangGraph 原生提供的记忆方案，`Checkpointer` 保存Agent每一步执行快照，`Store` 存放跨会话实体事实记忆，支持会话断点恢复、Human‑in‑the‑loop暂停等待人工输入。
-  - 优点：原生适配LangGraph工作流，可以暂停、恢复Agent执行状态；
-  - 缺点：引入额外持久化存储，增加系统复杂度；业务简单场景下属于过度设计。本项目优先保证业务链路稳定，因此没有接入该套持久记忆。
-  
-  3. **Claude‑Code 式应用层自治记忆（重点调研，本项目未落地）**
-  这是一套很有启发性的**文件驱动的分层记忆架构**，不依赖框架内部状态存储，区分「会话瞬时工作记忆」和「磁盘长期记忆」。
-  
-  **完整工作流程：**
-  - 会话内部：仍然使用普通 `messages[]` 作为瞬时工作记忆，承担本轮对话、工具调用；会话结束之后，这部分内存消息直接销毁，不会永久保存。
-  - 后台提取子Agent：当对话token到达阈值，会启动独立的后台提取子Agent，只读取本轮新增对话内容，过滤掉代码、可从源码推导出来的信息，只提炼项目决策、用户偏好、业务约束、踩坑结论等关键信息，写入本地markdown记忆文件（`MEMORY.md`以及细分主题文档）。
-  - 会话启动加载：开启新会话时，自动读取记忆文件头部限定大小的内容注入系统提示词；记忆文件存在大小上限，超过阈值会触发自动精简，把细节迁移到其他专题文件，保证启动加载不会爆上下文窗口[[(Claude Cod...)]](https://code.claude.com/docs/fr/memory?f_link_type=f_linkinlinenote&flow_extra=eyJkb2NfcG9zaXRpb24iOjAsImRvY19pZCI6ImRiMTk1NmVlNDdkZjY2YjAtZmE1YmY0MTQ3MWQzMzg0NCIsImlubGluZV9kaXNwbGF5X3Bvc2l0aW9uIjowfQ%3D%3D "[(Claude Cod...)]")。
-  - 按需检索：不会把全部历史一股脑塞给模型；当任务需要，再读取对应的记忆文档，做到按需注入。
-  
-  **优势：**
-  1. 和Agent框架解耦，不绑定LangGraph等特定框架，普通对话、工具调用Agent都可以复用这套记忆逻辑；
-  2. 天然跨会话、跨进程，重启服务记忆不会丢失；
-  3. 控制上下文窗口规模，避免消息无限累积带来token爆炸；
-  4. 记忆全部落盘为可读Markdown，人可以直接阅读、编辑、删除记忆内容，可跟随Git版本管理。
-  
-  **缺点与工程难点：**
-  1. 需要额外实现后台提取子Agent、记忆去重、过期记忆清理、文件大小管控；
-  2. 记忆提取质量高度依赖提示词；存在漏记、错记、重复记录的风险；
-  3. 记忆检索逻辑需要自己实现，增加业务开发成本。
-  
-  > 感悟：**不存在真正意义上的“AI原生记忆”，LLM 的记忆本质就是挑选一部分文本，在合适时机喂给大模型，区别只在于存储位置、触发时机、压缩策略。**
-  > 本项目优先保证 Agent 工具调用、RAG知识库、预约确认业务链路稳定可用；会话记忆仅做内存消息拼接。
-  > Claude‑Code这套文件式自治记忆是后续很有价值的迭代方向：后续可以在此项目之上增加记忆提取模块，把关键对话事实持久化，缓解上下文膨胀、会话重启丢失记忆的问题。
+![agent_flow](./docs/images/agent_flow.png)
+
+### 🧠 Agent 记忆体系的工程探索
+
+在实现智能体对话记忆时，调研了当前三类典型记忆实现方案，本项目采用**消息列表拼接**的实现方式，同时对比另外两种主流方案。**结论先行：方案 1 已落地，方案 2/3 为调研对比，方案 3 列为下一迭代方向。**
+
+1. **简单消息拼接记忆（本项目采用）**
+   将用户与大模型完整对话历史维护在内存 `messages[]` 列表，每一轮请求把全部历史消息一并传给 LLM，配合 LangGraph 完成工具调用流转。
+   - 优点：实现简单，不需要额外存储组件，工具调用链路稳定；
+   - 缺点：服务重启、会话刷新记忆全部丢失；对话轮次越多上下文 token 持续膨胀；没有做记忆压缩、持久化存储。
+
+2. **基于框架的结构化记忆（LangGraph Checkpointer + Store，本项目未采用）**
+   LangGraph 原生提供的记忆方案，`Checkpointer` 保存 Agent 每一步执行快照，`Store` 存放跨会话实体事实记忆，支持会话断点恢复、Human-in-the-loop 暂停等待人工输入。
+   - 优点：原生适配 LangGraph 工作流，可以暂停、恢复 Agent 执行状态；
+   - 缺点：引入额外持久化存储，增加系统复杂度；业务简单场景下属于过度设计。本项目优先保证业务链路稳定，因此没有接入该套持久记忆。
+
+3. **Claude Code 式「文件驱动分层记忆」（重点调研，本项目未落地）**
+   一套不依赖框架内部状态的记忆架构，核心是**按「生命周期 + 作用域」给记忆分层**：
+
+   - **静态层（`CLAUDE.md`）**：启动即加载的持久指令。
+   - **会话层**：后台 fork 的子 Agent 在 Token 达到阈值（约 1 万）时，把本轮内容压缩成会话摘要（`session-memory/summary.md`），会话结束即弃。
+   - **长期层（Auto Memory + `MEMORY.md` 索引）**：只沉淀「项目决策、用户偏好、业务约束、踩坑结论」等高价值事实，落成带 YAML frontmatter 的 Markdown 分片，`MEMORY.md` 作索引。
+   - **注入层（Relevant Memories）**：新会话按需检索相关记忆注入，而非把全量历史塞进上下文。
+
+   （参考官方文档：[Claude Code Memory](https://code.claude.com/docs/en/memory)）
+
+   **取舍：** 优——与框架解耦、跨会话跨进程持久、按需注入控制上下文、记忆可读可编辑并随 Git 管理；缺——需自建提取子 Agent、去重、过期清理、大小治理，提取质量强依赖提示词，检索路由需自行实现。
+
+   **为什么不落地：** 本项目对话轮次短、无跨会话持久诉求，优先保证工具调用 / RAG / 预约确认主链路稳定；且项目已内置 Chroma（`kb_service`），未来复用向量库 + 补一个摘要子 Agent 即可低成本升级。
+
+   > **不存在真正的「AI 原生记忆」——LLM 记忆的本质，是「在合适的时机，把最相关的一段文本喂给模型」，区别只在于存储位置、触发时机与压缩/检索策略。**
+   > 因此记忆系统的真正难点不在「存」，而在「召回与裁决」：哪些事实值得长期保留、如何在有限上下文里选中最相关几条、如何避免陈旧结论被反复「重开」——这是本项目下一步最想攻克的工程点。
   
 
 ## 技术栈
@@ -94,6 +88,112 @@
 
 - **部署**：Docker（`docker-compose.yml` + `backend/Dockerfile`），Python 3.11 slim 镜像，国内镜像源（阿里 PyPI 镜像、hf-mirror）。
 - **数据库脚本**：`sql/lab_agent.sql`（MySQL 8 导出，含 8 个实验室、32 个设备、示例用户的完整演示数据）。
+
+## 🧠 AI 智能助手（Agent）架构
+
+AI 助手是整个项目最核心的工程部分：不是简单的「调一次 LLM」，而是一个**可控、可观测、可落库**的 LangGraph Agent，叠加 Chroma 向量库的 RAG 检索与 SSE 流式交互。下面按链路逐层拆解。
+
+### 总体架构
+
+```mermaid
+flowchart LR
+    FE[Vue 前端 AIChat] -->|POST /api/ai/chat/stream| API[FastAPI 路由 ai.py]
+    API -->|async generator| AG[agent_service.stream_agent]
+    AG -->|astream_events v2| GRAPH[LangGraph 状态图]
+    GRAPH --> LLM[ChatOpenAI\nqwen-plus / temperature=0 / streaming]
+    GRAPH --> TOOLS[ToolNode 工具集]
+    TOOLS --> RAG[kb_service 检索\nChroma 向量库]
+    TOOLS --> DB[(MySQL\nSQLAlchemy)]
+```
+
+一次提问被拆成**可流式推给前端的内部事件**（思考中 → 调工具 → 逐字吐 token → 完成），而不是等最终结果一次性返回。
+
+### Agent 工作流（LangGraph 状态图）
+
+核心实现见 `backend/app/services/agent_service.py` 的 `build_agent()`，是一个标准 **ReAct 式的 Agent + Tools 双节点图**：
+
+```mermaid
+flowchart LR
+    Start([START]) --> Agent["agent 节点\nLLM.bind_tools(5 个工具)"]
+    Agent -->|"tools_condition：\n有 tool_call"| Tools["tools 节点\nToolNode 执行并回填结果"]
+    Tools --> Agent
+    Agent -->|"无 tool_call"| End([END])
+```
+
+关键参数与设计：
+
+- **模型配置**：`ChatOpenAI` 接入阿里云百炼 DashScope 兼容接口，`temperature=0`（保证输出稳定可复现）、`streaming=True`（打开逐字流）、`.bind_tools(tools)` 把工具声明注入模型。
+- **循环上限**：`recursion_limit=10`，防止模型在「提问 → 调工具 → 再提问」之间无限往返，超限自动终止。
+- **状态管理**：`MessagesState` 承载完整 `messages` 列表，工具结果作为 `ToolMessage` 追加回图，再喂回 `agent` 节点决策——正是标准 ReAct 循环。
+
+### 工具集（Tools）
+
+工具定义见 `backend/app/services/agent_tools.py` 的 `build_tools()`，共 5 个，**读写工具都走真实业务 Service，与普通 HTTP 接口共享同一套校验逻辑**：
+
+| 工具 | 参数 | 职责 | 类型 |
+| --- | --- | --- | --- |
+| `search_lab_docs` | `query` | 检索知识库（规则/安全/开放时间） | 只读 |
+| `list_open_labs` | `keywords?` | 查询状态为「开放」的实验室（复用 `lab_service` 分页） | 只读 |
+| `list_lab_equipments` | `lab_id`, `keywords?` | 查询某实验室下设备（复用 `equipment_service`） | 只读 |
+| `create_lab_reservation` | `lab_id`, `date`, `start_time`, `end_time`, `equipment_id?`, `remark?` | 真实提交预约，复用 `reservation_service.create_reservation` 全部业务校验（时间冲突、开放时间、设备维修等） | **写操作** |
+| `get_today` | 无 | 取服务器当天日期，供「今天/明天」日期换算 | 只读 |
+
+两处工程细节值得一提：
+
+- **闭包注入身份**：`build_tools(db, current_user)` 用闭包把当前 HTTP 请求的 `db` 会话和登录用户对象捕获进工具内部——Agent 的写操作天然以「登录用户本人」身份落库，权限不靠 LLM 自觉。
+- **写操作有强约束**：`create_lab_reservation` 内部不自己拼 SQL，而是委托给与 `POST /api/reservation` 完全相同的 `reservation_service.create_reservation`，避免「AI 通道」和「普通表单通道」出现两套不一致的校验规则。
+
+### 流式交互协议（SSE）
+
+路由 `POST /api/ai/chat/stream`（`app/api/ai.py`）返回 `text/event-stream`；生成器 `stream_agent()` 基于 LangGraph 的 `astream_events(version="v2")`，把图内部事件转换成前端可消费的语义事件：
+
+| 事件 `type` | 触发时机 | 字段 | 前端行为 |
+| --- | --- | --- | --- |
+| `status` | 流程开始 | `message` | 显示「正在思考…」 |
+| `tool_start` | 模型决定调用某工具 | `name`, `label` | 展示该工具的中文名称（过程可视化） |
+| `tool_end` | 工具执行完成 | `name`, `label`, `preview` | 展示工具结果的前 200 字预览 |
+| `token` | 模型逐字输出 | `content` | 打字机式追加到聊天区 |
+| `done` | 正常结束 | — | 结束本轮 |
+| `error` | 业务/未知异常 | `message` | 错误提示（流内同样以事件抛出） |
+
+配套细节：
+
+- **中文过程文案**：`TOOL_LABELS` 把工具英文名映射成「检索实验室知识库 / 查询开放实验室 / 提交预约」等，让用户看得懂 Agent 正在做什么。
+- **内容兼容**：`_chunk_text()` 统一处理 chunk 的 `content`（既可能是 `str`，也可能是 `[{type,text}]` 块列表），`_tool_output_preview()` 把工具返回的长 JSON 截断成 200 字预览，避免刷屏。
+- **噪声过滤**：`on_chat_model_stream` 只保留 `langgraph_node` 为 `agent` 的 token，丢弃 LangGraph 其它内部节点的输出。
+
+### RAG 知识库链路
+
+实现见 `backend/app/services/kb_service.py`：
+
+```mermaid
+flowchart LR
+    MD["data/kb/*.md\n（预约规则/安全规范/开放时间/设备使用）"] -->|首次启动导入| VEC[(Chroma 集合 lab_kb)]
+    Q[用户提问] -->|bge-small-zh-v1.5 向量化| VEC
+    VEC -->|query top-5| FILTER["相似度过滤\nscore = 1/(1+distance) ≥ 0.5"]
+    FILTER -->|取 top-2| PROMPT[拼入 System Prompt 检索资料]
+    PROMPT --> LLM[LLM 依据资料回答]
+```
+
+- **文档粒度**：每个 `.md` 全文作为一个 document 入库（`id` = 文件名 stem，`metadata.source` = 文件名），当前业务文档短小，未做分块。
+- **入库时机**：仅当集合为空（`col.count() == 0`）时导入一次，避免重复写入。
+- **检索与重排**：取相似度阈值 0.5 以上的 top-2 片段，格式化后注入 `SYSTEM_PROMPT` 的「以下是检索到的实验室资料」段落。
+- **懒加载 + 单例**：Embedding 模型 `SentenceTransformerEmbeddingFunction` 通过 `get_embedding_fn()` 懒加载并全局复用，避免每请求重复加载。
+- **启动预热**：`main.py` 的 `lifespan` 中用 `asyncio.to_thread(kb_service.warmup)` 把「模型加载 + 首次检索」放在启动阶段完成（约 15s），避免落在首个用户请求上导致前端 30s 超时。
+
+### 安全护栏与防幻觉
+
+全部落在 `agent_service.py` 的 `SYSTEM_PROMPT` 与工具流程约束中，是 Agent 与真实业务系统对接时最容易踩、也最体现工程成熟度的部分：
+
+1. **预约前强制确认**：模型在调用 `create_lab_reservation` 前，必须先复述（实验室/设备的 ID 与名称、日期、开始/结束时间），并等到用户明确回复「确认 / 确认预约 / 就这样预约」才能动手。
+2. **先查后建，禁止编造**：确认环节若缺 `lab_id` 必须先 `list_open_labs` 查到；缺 `equipment_id` 必须先 `list_lab_equipments` 查到；明令「不要瞎编数据库里没有的实验室或设备」。
+3. **只读能力边界**：Agent 不能替用户改数据库、不能绕过审核；预约提交后是「待审核」态，须管理员确认后方可用。
+4. **日期不臆测**：涉及「今天/明天/后天」先调 `get_today`，禁止模型凭训练日期凭空作答。
+5. **回答有据**：开放时间、规则类问题优先 `search_lab_docs`，不凭空回复。
+
+### 演进记录
+
+早期实现（`app/services/ai_service.py`，路由已注释）是 **OpenAI 原生 function calling**：`tool_choice="auto"` + 最多 3 轮手工 `tool_calls` 循环。后迁移到 **LangGraph**，换取的是：图结构描述清晰、`astream_events` 天然支持流式事件、`ToolNode`/`tools_condition` 免去手写循环与消息回填。这段演进可在面试中作为「为什么从手写 function calling 迁移到 Agent 框架」的论据。
 
 ## 目录结构
 
