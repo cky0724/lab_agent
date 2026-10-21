@@ -1,0 +1,13 @@
+services:
+  backend:
+    build: ./backend
+    container_name: lab-agent-backend
+    network_mode: host
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - HF_ENDPOINT=https://hf-mirror.com
+    volumes:
+      - ./backend/.env:/app/.env
+      - ./backend/uploads:/app/uploads
+      - ./backend/model-cache:/root/.cache/huggingface
+    restart: unless-stopped

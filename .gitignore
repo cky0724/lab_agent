@@ -1,0 +1,35 @@
+# ===== 环境变量（含密钥，勿提交）=====
+.env
+.env.*
+!**/example.env
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# ===== 运行时数据 =====
+backend/data/chroma/
+backend/uploads/
+backend/model-cache/
+
+# ===== Node / 前端 =====
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+
+# ===== 部署副本 / 打包件 =====
+deploy/
+*.zip
+
+# ===== IDE / 系统 =====
+.idea/
+*.log
+.DS_Store
+Thumbs.db
